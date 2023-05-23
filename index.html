@@ -3,30 +3,23 @@
   <head>
     <title>Drive API Quickstart</title>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-    <style>
-        html,
-        body {
-            height: 100%;
-            margin: 0;
-        }
-
-        #c {
-            width: 100%;
-            height: 100%;
-            display: block;
-        }
-    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
   </head>
-
   <body>
+    <p>Drive API Quickstart</p>
 
-    <canvas id="c"></canvas>
+    <!--Add buttons to initiate auth sequence and sign out-->
+    <button id="authorize_button" onclick="handleAuthClick()">Authorize</button>
+    <button id="signout_button" onclick="handleSignoutClick()">Sign Out</button>
+    <button id="save_button" onclick="saveCameraPositions()">Save Camera Positions</button>
 
-    <!-- GoogleDriveAPI Setting -->
+    <pre id="content" style="white-space: pre-wrap;"></pre>
+
     <script type="text/javascript">
       /* exported gapiLoaded */
       /* exported gisLoaded */
+      /* exported handleAuthClick */
+      /* exported handleSignoutClick */
 
       // TODO: Set to client ID and API key from the Developer Console
       const CLIENT_ID = '357106063401-grn3hm3ekani4s9f3gt0kpkie26iddjh.apps.googleusercontent.com';
@@ -43,6 +36,9 @@
       let gapiInited = false;
       let gisInited = false;
 
+      document.getElementById('authorize_button').style.visibility = 'hidden';
+      document.getElementById('signout_button').style.visibility = 'hidden';
+
       /**
        * Callback after api.js is loaded.
        */
@@ -57,12 +53,10 @@
       async function initializeGapiClient() {
         await gapi.client.init({
           apiKey: API_KEY,
-          clientId: CLIENT_ID,
           discoveryDocs: [DISCOVERY_DOC],
-          scope: SCOPES
         });
-
         gapiInited = true;
+        maybeEnableButtons();
       }
 
       /**
@@ -74,154 +68,101 @@
           scope: SCOPES,
           callback: '', // defined later
         });
-
         gisInited = true;
+        maybeEnableButtons();
       }
 
       /**
-       * Save CSV file to Google Drive.
+       * Enables user interaction after all libraries are loaded.
        */
-      function saveFileToDrive(csvData, fileName, mimeType) {
-        if (!gapiInited || !gisInited) {
-          console.error('Google API is not initialized.');
-          return;
+      function maybeEnableButtons() {
+        if (gapiInited && gisInited) {
+          document.getElementById('authorize_button').style.visibility = 'visible';
         }
+      }
 
-        if (!tokenClient.isSignedIn()) {
-          console.error('User is not signed in.');
-          return;
-        }
-
-        gapi.client.drive.files.create({
-          resource: {
-            name: fileName,
-            mimeType: mimeType
-          },
-          media: {
-            mimeType: mimeType,
-            body: csvData
+      /**
+       *  Sign in the user upon button click.
+       */
+      function handleAuthClick() {
+        tokenClient.callback = async (resp) => {
+          if (resp.error !== undefined) {
+            throw (resp);
           }
-        }).then(response => {
-          console.log('File created:', response);
-        }).catch(error => {
-          console.error('Error creating file:', error);
+          document.getElementById('signout_button').style.visibility = 'visible';
+          document.getElementById('authorize_button').innerText = 'Refresh';
+          await listFiles();
+        };
+
+        if (gapi.client.getToken() === null) {
+          tokenClient.requestAccessToken({prompt: 'consent'});
+        } else {
+          tokenClient.requestAccessToken({prompt: ''});
+        }
+      }
+
+      /**
+       *  Sign out the user upon button click.
+       */
+      function handleSignoutClick() {
+        const token = gapi.client.getToken();
+        if (token !== null) {
+          google.accounts.oauth2.revoke(token.access_token);
+          gapi.client.setToken('');
+          document.getElementById('content').innerText = '';
+          document.getElementById('authorize_button').innerText = 'Authorize';
+          document.getElementById('signout_button').style.visibility = 'hidden';
+        }
+      }
+
+      /**
+       * Save camera positions to a CSV file.
+       */
+      function saveCameraPositions() {
+        const x = 20;
+        const y = 30;
+        const z = 40;
+
+        const csvData = `x,y,z\n${x},${y},${z}\n`;
+
+        const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8' });
+        saveAs(blob, 'camera_positions.csv');
+      }
+
+      /**
+       * Print metadata for files in a specific folder.
+       */
+      async function listFiles() {
+        const folderName = 'Project_ComputerRendering';
+
+        const response = await gapi.client.drive.files.list({
+          'q': `mimeType='application/vnd.google-apps.folder' and name='${folderName}'`,
+          'fields': 'files(id)',
         });
-      }
 
-      /**
-       * Generate CSV data from VR headset camera positions.
-       */
-      function generateCSVData(positions) {
-        let csvData = 'x,y,z\n';
+        const folderId = response.result.files[0].id;
 
-        for (const position of positions) {
-          csvData += `${position.x},${position.y},${position.z}\n`;
+        const fileListResponse = await gapi.client.drive.files.list({
+          'q': `'${folderId}' in parents`,
+          'fields': 'files(id, name)',
+        });
+
+        const files = fileListResponse.result.files;
+        let output = '';
+
+        if (files && files.length > 0) {
+          output = 'Files:\n';
+          files.forEach(file => {
+            output += `File Name: ${file.name}, File ID: ${file.id}\n`;
+          });
+        } else {
+          output = 'No files found.';
         }
 
-        return csvData;
+        document.getElementById('content').innerText = output;
       }
-
-      /**
-       * Generate CSV file and save it to Google Drive.
-       */
-      function generateAndSaveCSV() {
-        if (!gapiInited || !gisInited) {
-          console.error('Google API is not initialized.');
-          return;
-        }
-
-        if (!tokenClient.isSignedIn()) {
-          console.error('User is not signed in.');
-          return;
-        }
-
-        const positions = [];
-
-        // Get VR headset camera positions and store them
-        function updateCameraPosition() {
-          const position = camera.position.clone();
-          positions.push(position);
-
-          setTimeout(updateCameraPosition, 1000); // Update every 1 second
-        }
-
-        updateCameraPosition();
-
-        // Save the CSV file after a certain time
-        setTimeout(() => {
-          const csvData = generateCSVData(positions);
-          const fileName = 'vr_camera_positions.csv';
-          const mimeType = 'text/csv';
-
-          saveFileToDrive(csvData, fileName, mimeType);
-        }, 5000); // Save the file after 5 seconds
-      }
-
-      // Load Google API and Google Identity Services
-      function loadGoogleAPIs() {
-        const gapiScript = document.createElement('script');
-        gapiScript.src = 'https://apis.google.com/js/api.js';
-        gapiScript.onload = gapiLoaded;
-        document.body.appendChild(gapiScript);
-
-        const gisScript = document.createElement('script');
-        gisScript.src = 'https://accounts.google.com/gsi/client';
-        gisScript.onload = gisLoaded;
-        document.body.appendChild(gisScript);
-      }
-
-      // Call the function to load Google APIs
-      loadGoogleAPIs();
-
     </script>
-
+    <script async defer src="https://apis.google.com/js/api.js" onload="gapiLoaded()"></script>
+    <script async defer src="https://accounts.google.com/gsi/client" onload="gisLoaded()"></script>
   </body>
-
-  <script type="module">
-    // Three.js imports
-    import * as THREE from 'https://unpkg.com/three@0.148.0/build/three.module.js';
-    import { VRButton } from 'https://unpkg.com/three@0.148.0/examples/jsm/webxr/VRButton.js';
-
-    // Initialize settings
-    const canvas = document.querySelector('#c');
-    const renderer = new THREE.WebGLRenderer({ canvas });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    document.body.appendChild(renderer.domElement);
-
-    const scene = new THREE.Scene();
-    const aspect = window.innerWidth / window.innerHeight;
-
-    // Camera settings
-    const camera = new THREE.PerspectiveCamera(75, aspect, 0.1, 1000);
-    camera.position.z = 5;
-
-    // VR settings
-    document.body.appendChild(VRButton.createButton(renderer));
-    renderer.xr.enabled = true;
-
-    // Object settings
-    const geometry = new THREE.BoxGeometry(1, 1, 1);
-    const material = new THREE.MeshNormalMaterial();
-    const cube = new THREE.Mesh(geometry, material);
-    scene.add(cube);
-
-    // Animation
-    let degree = 0;
-    const render = function () {
-      const rotation = (degree * Math.PI) / 180;
-      const targetX = 2 * Math.cos(rotation);
-      const targetY = 2 * Math.sin(rotation);
-
-      cube.rotation.y = -rotation;
-      cube.position.x = targetX;
-      cube.position.z = targetY;
-
-      renderer.render(scene, camera);
-      degree += 1;
-    };
-    renderer.setAnimationLoop(render);
-
-    // Call the function to generate and save CSV file
-    generateAndSaveCSV();
-  </script>
 </html>
